@@ -14,7 +14,7 @@ if [ -n "$2" ]; then
 fi
 wget -nc ftp://sidads.colorado.edu/DATASETS/IDBMG4_BedMachineGr/$infile
 
-ver=2_ibcao
+ver=2
 if [ -n "$3" ]; then
     ver=$3
 fi
@@ -63,6 +63,10 @@ nc2cdo.py $PISMVERSION
 echo "done."
 echo
 
+ibcaofile=IBCAO_V3_500m_RR
+wget -nc http://www.ngdc.noaa.gov/mgg/bathymetry/arctic/grids/version3_0/${ibcaofile}_tif.zip
+unzip -o ${ibcaofile}_tif.zip
+
 # Create a buffer that is a multiple of the grid resolution
 # and works for grid resolutions up to 36km.
 buffer_x=148650
@@ -72,13 +76,13 @@ ymin=$((-3349600 - $buffer_y))
 xmax=$((864700 + $buffer_x))
 ymax=$((-657600 + $buffer_y))
 
+CUT="-cutline ../shape-files/gris-domain.shp"
 
-# for GRID in 36000 18000 9000 4500 3600 3000 2400 1800 1500 1200 900 600 450 300; do
-for GRID in 36000; do
-    outfile=pism_Greenland_${GRID}m_mcb_jpl_v${ver}.nc
+for GRID in 18000 9000 6000 4500 3600 3000 2400 1800 1500 1200 900 600 450 300; do
+    outfile=pism_Greenland_ext_${GRID}m_mcb_jpl_v${ver}.nc
     for var in "bed" "errbed"; do
         rm -f g${GRID}m_${var}_v${ver}.tif g${GRID}m_${var}_v${ver}.nc
-        gdalwarp -overwrite  -r average -s_srs EPSG:3413 -t_srs EPSG:3413 -te $xmin $ymin $xmax $ymax -tr $GRID $GRID -of GTiff NETCDF:$infile:$var g${GRID}m_${var}_v${ver}.tif
+        gdalwarp $CUT -overwrite  -r average -s_srs EPSG:3413 -t_srs EPSG:3413 -te $xmin $ymin $xmax $ymax -tr $GRID $GRID -of GTiff NETCDF:$infile:$var g${GRID}m_${var}_v${ver}.tif
         gdal_translate -co "FORMAT=NC2" -of netCDF g${GRID}m_${var}_v${ver}.tif g${GRID}m_${var}_v${ver}.nc 
         ncatted -a nx,global,d,, -a ny,global,d,, -a xmin,global,d,, -a ymax,global,d,, -a spacing,global,d,, g${GRID}m_${var}_v${ver}.nc
         
@@ -108,13 +112,20 @@ for GRID in 36000; do
     ncatted -a proj4,global,o,c,"+init=epsg:3413" $outfile
     
     ba13file=Greenland_bedrock_topography_V3_clean
+    rsync -rvu --progress $user@beauregard.gi.alaska.edu:/data/tmp/data_sets/greenland_beds_v3/${ba13file}.nc
     
-    gdalwarp -overwrite -r average -s_srs "+proj=stere +ellps=WGS84 +datum=WGS84 +lon_0=-39 +lat_0=90 +lat_ts=71 +units=m" -t_srs EPSG:3413 -te $xmin $ymin $xmax $ymax -tr $GRID $GRID -of GTiff NETCDF:${ba13file}.nc:topg ${ba13file}_epsg3413.tif
-    gdal_translate -co "FORMAT=NC2" -of netCDF ${ba13file}_epsg3413.tif ${ba13file}_epsg3413.nc
+    gdalwarp $CUT -overwrite -r average -s_srs "+proj=stere +ellps=WGS84 +datum=WGS84 +lon_0=-39 +lat_0=90 +lat_ts=71 +units=m" -t_srs EPSG:3413 -te $xmin $ymin $xmax $ymax -tr $GRID $GRID -dstnodata -9999 -of GTiff NETCDF:${ba13file}.nc:topg ${ba13file}_epsg3413_g${GRID}m.tif
+    gdal_translate -co "FORMAT=NC2" -of netCDF ${ba13file}_epsg3413_g${GRID}m.tif ${ba13file}_epsg3413_g${GRID}m.nc
     
-    ncks -A -v topg ${ba13file}_epsg3413.nc $outfile
+    ncks -A -v topg ${ba13file}_epsg3413_g${GRID}m.nc $outfile
     ncap2 -O -s "where(thickness==0) {bed=topg;}; where(bed==-9999) {bed=topg;};" $outfile $outfile
-    ncks -O -v topg -x $outfile $outfile
+
+    gdalwarp $CUT -overwrite -r average -t_srs EPSG:3413 -te $xmin $ymin $xmax $ymax -tr $GRID $GRID -of GTiff ${ibcaofile}.tif ${ibcaofile}_epsg3413_g${GRID}m.tif
+    gdal_translate -co "FORMAT=NC2" -of netCDF  ${ibcaofile}_epsg3413_g${GRID}m.tif  ${ibcaofile}_epsg3413_g${GRID}m.nc
+    ncks -A -v Band1 ${ibcaofile}_epsg3413_g${GRID}m.nc $outfile
+    ncap2 -O -s "where(bed==-9999) {bed=Band1;}; where(Band1<=-9990) {bed=-9999;};" $outfile $outfile
+
+#    ncks -O -v Band1,topg -x $outfile $outfile
 
     ncks -O g${GRID}m_${var}_v${ver}.nc griddes_${GRID}m.nc
     nc2cdo.py --srs "+init=epsg:3413" griddes_${GRID}m.nc
